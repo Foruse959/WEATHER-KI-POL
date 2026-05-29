@@ -296,7 +296,7 @@ class PositionManager:
         return pos
 
     def _place_live_order(self, token_id: str, price: float, size_usd: float, shares: float) -> Optional[Dict]:
-        """Place a real GTC limit order on Polymarket CLOB."""
+        """Place a real GTC limit order on Polymarket CLOB V2."""
         try:
             from data.clob_client import ClobClient
             if not hasattr(self, '_clob_client') or self._clob_client is None:
@@ -306,9 +306,15 @@ class PositionManager:
                     funder=Config.get_funder_address() or None,
                     signature_type=Config.POLY_SIGNATURE_TYPE,
                 )
-            # Use updateBalanceAllowance before order
+
+            # Update balance/allowance with correct V2 params
             try:
-                self._clob_client._py_clob_client.update_balance_allowance()
+                from py_clob_client_v2.clob_types import BalanceAllowanceParams, AssetType
+                params = BalanceAllowanceParams(
+                    asset_type=AssetType.COLLATERAL,
+                    signature_type=Config.POLY_SIGNATURE_TYPE,
+                )
+                self._clob_client._py_clob_client.update_balance_allowance(params)
             except Exception:
                 pass
 
@@ -325,10 +331,10 @@ class PositionManager:
             return None
 
     def get_live_balance(self) -> Optional[float]:
-        """Get REAL available balance from CLOB (with caching)."""
+        """Get REAL available balance from CLOB (correct V2 API with AssetType)."""
         now = time.time()
         if hasattr(self, '_balance_cache_time') and (now - self._balance_cache_time) < 10:
-            return self._balance_cache_value
+            return getattr(self, '_balance_cache_value', None)
 
         try:
             from data.clob_client import ClobClient
@@ -339,17 +345,36 @@ class PositionManager:
                     funder=Config.get_funder_address() or None,
                     signature_type=Config.POLY_SIGNATURE_TYPE,
                 )
-            # Use getBalanceAllowance from CLOB
-            bal_data = self._clob_client._py_clob_client.get_balance_allowance()
-            if bal_data:
-                # Balance is in 6 decimal places (microUSDC)
-                raw_balance = float(bal_data.get('balance', 0))
-                available = raw_balance / 1_000_000  # convert to dollars
-                self._balance_cache_value = available
-                self._balance_cache_time = now
-                return available
+
+            # CORRECT V2 balance call — requires BalanceAllowanceParams with AssetType.COLLATERAL
+            try:
+                from py_clob_client_v2.clob_types import BalanceAllowanceParams, AssetType
+                params = BalanceAllowanceParams(
+                    asset_type=AssetType.COLLATERAL,
+                    signature_type=Config.POLY_SIGNATURE_TYPE,
+                )
+                bal_data = self._clob_client._py_clob_client.get_balance_allowance(params)
+                if bal_data:
+                    raw = float(bal_data.get('balance', 0))
+                    available = raw / 1_000_000  # pUSD has 6 decimals
+                    self._balance_cache_value = available
+                    self._balance_cache_time = now
+                    return available
+            except ImportError:
+                pass
+            except Exception as e:
+                log.debug(f"V2 balance API: {e}")
+
+            # Fallback: on-chain pUSD balance via RPC
+            wallet = Config.POLY_PROXY_WALLET or Config.derive_wallet_address()
+            if wallet:
+                onchain = self._clob_client.get_pusd_balance_onchain(wallet)
+                if onchain is not None:
+                    self._balance_cache_value = onchain
+                    self._balance_cache_time = now
+                    return onchain
         except Exception as e:
-            log.debug(f"Balance check failed: {e}")
+            log.debug(f"Balance fetch error: {e}")
 
         return None
 
