@@ -34,14 +34,36 @@ class Config:
     POLY_PASSPHRASE = os.getenv('POLY_PASSPHRASE', '')
     POLY_SIGNATURE_TYPE = int(os.getenv('POLY_SIGNATURE_TYPE', '3'))
     POLY_CHAIN_ID = int(os.getenv('POLY_CHAIN_ID', '137'))
-    POLY_BUILDER_CODE = os.getenv('POLY_BUILDER_CODE', '')
 
     # ═══════════════════════════════════════════════════════════════════
-    # API ENDPOINTS
+    # BUILDER RELAYER (required for live V2 trading)
+    # ═══════════════════════════════════════════════════════════════════
+    POLY_BUILDER_API_KEY = os.getenv('POLY_BUILDER_API_KEY', '')
+    POLY_BUILDER_SECRET = os.getenv('POLY_BUILDER_SECRET', '')
+    POLY_BUILDER_PASSPHRASE = os.getenv('POLY_BUILDER_PASSPHRASE', '')
+    POLY_BUILDER_CODE = os.getenv('POLY_BUILDER_CODE', '')
+    AUTO_REDEEM_INTERVAL = int(os.getenv('AUTO_REDEEM_INTERVAL', '120'))
+
+    # ═══════════════════════════════════════════════════════════════════
+    # V2 CONTRACT ADDRESSES (Polygon mainnet)
+    # ═══════════════════════════════════════════════════════════════════
+    PUSD_CONTRACT = '0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB'
+    CTF_EXCHANGE_V2 = '0xE111180000d2663C0091e4f400237545B87B996B'
+    NEG_RISK_CTF_EXCHANGE = '0xe2222d279d744050d28e00520010520000310F59'
+
+    # ═══════════════════════════════════════════════════════════════════
+    # API ENDPOINTS (V2 — same as polymarket-bot-v2)
     # ═══════════════════════════════════════════════════════════════════
     GAMMA_API_URL = 'https://gamma-api.polymarket.com'
     CLOB_API_URL = 'https://clob.polymarket.com'
+    POLYMARKET_WS_URL = 'wss://ws-subscriptions-clob.polymarket.com/ws/market'
     POLYGON_RPC_URL = os.getenv('POLYGON_RPC_URL', '')
+    CLOB_RELAY_URL = os.getenv('CLOB_RELAY_URL', '')
+
+    # Fee: weather = 0% maker (GTC), 5% taker (FOK)
+    MAKER_FEE_RATE = 0.0
+    TAKER_FEE_RATE = 0.05
+    MAKER_PREFERRED = True  # always GTC limit = 0% fee
 
     # ═══════════════════════════════════════════════════════════════════
     # WEATHER API KEYS
@@ -180,8 +202,42 @@ class Config:
         return cls.TRADING_MODE.lower() == 'live'
 
     @classmethod
+    def is_live_ready(cls) -> bool:
+        """Check if all credentials for live trading are set."""
+        pk = cls.POLY_PRIVATE_KEY.strip() if cls.POLY_PRIVATE_KEY else ''
+        return bool(pk)
+
+    @classmethod
     def get_clob_url(cls) -> str:
+        if cls.CLOB_RELAY_URL:
+            return cls.CLOB_RELAY_URL.rstrip('/')
         return cls.CLOB_API_URL
+
+    @classmethod
+    def get_funder_address(cls) -> str:
+        """Resolve funder address (same logic as polymarket-bot-v2)."""
+        if cls.POLY_FUNDER_ADDRESS and cls.POLY_FUNDER_ADDRESS.strip():
+            return cls.POLY_FUNDER_ADDRESS.strip()
+        if cls.POLY_SIGNATURE_TYPE == 2:
+            if cls.POLY_PROXY_WALLET and cls.POLY_PROXY_WALLET.strip():
+                return cls.POLY_PROXY_WALLET.strip()
+            return ''
+        if cls.POLY_SIGNATURE_TYPE == 0:
+            return cls.derive_wallet_address()
+        return ''
+
+    @classmethod
+    def derive_wallet_address(cls) -> str:
+        pk = cls.POLY_PRIVATE_KEY.strip() if cls.POLY_PRIVATE_KEY else ''
+        if not pk:
+            return ''
+        try:
+            from eth_account import Account
+            if not pk.startswith('0x'):
+                pk = '0x' + pk
+            return Account.from_key(pk).address
+        except Exception:
+            return ''
 
     @classmethod
     def print_status(cls):

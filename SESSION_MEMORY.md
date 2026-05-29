@@ -383,3 +383,51 @@ Spread: $0.01 (4.9% of mid)
 - config.py: GTD_EXPIRY_HOURS_BEFORE = 2 (cancel passive bids 2h before resolution)
 - trading/executor: implements tiered entry with 3-min timeout
 - ml/decision_engine: EXIT decisions now include order_type recommendation
+
+
+
+---
+
+## Session 3 CONTINUED (May 29, 2026, 11:20 UTC) — Bug Fixes from weathererror.txt
+
+### Bugs Fixed:
+1. **`Unknown format code 'f' for object of type 'str'`** 
+   - Cause: `signal.reason.split('=')[1].split('°')[0]` returned string, ML tried `f"{forecast_temp:.1f}"`
+   - Fix: Explicit `float()` cast + try/except in ML engine
+   - Affected: London, Paris, Moscow, Seoul, Beijing, Singapore, Tokyo
+
+2. **Paper trading when TRADING_MODE=live**
+   - Cause: `add_position()` never called CLOB client
+   - Fix: Added `_place_live_order()` → calls `ClobClient.place_limit_order()`
+   - Now: Lazily initializes CLOB client on first live order
+   - Fallback: If CLOB fails, logs warning and tracks as paper
+
+3. **No colored terminal output**
+   - Added `ColorFormatter` class in logger.py
+   - GREEN BOLD: `✅ BUY CONFIRMED (LIVE) | OrderID=xxx | IN ORDERBOOK`
+   - GREEN: profit, won, redeemed
+   - YELLOW: status, dashboard, waiting
+   - ORANGE: loss, stop-loss, order failed
+   - RED: errors, CLOB failures
+
+4. **Missing CLOB initialization in live mode**
+   - Bot now initializes CLOB with: private_key, funder, signature_type=3
+   - Uses `py-clob-client-v2` with V2 API credentials
+   - Derives or uses manual API key from .env
+
+### .env Required for Live Mode:
+```env
+TRADING_MODE=live
+POLY_PRIVATE_KEY=0x...
+POLY_FUNDER_ADDRESS=0x...
+POLY_API_KEY=...
+POLY_API_SECRET=...
+POLY_PASSPHRASE=...
+POLY_SIGNATURE_TYPE=3
+```
+
+### Dashboard Output (from user's live run):
+- Bot IS working: 10 positions opened, +55.7% PnL, 64 signals generated
+- All positions showing profit (Buenos Aires +71%, Beijing +10%, Moscow +15%)
+- The bug was only crashing on SOME cities (where forecast_temp string parse failed)
+- Cities that worked fine: Houston, Chicago, Buenos Aires (US F° markets parse differently)
