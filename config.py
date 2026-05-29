@@ -67,16 +67,22 @@ class Config:
     MAX_POSITIONS = int(os.getenv('MAX_POSITIONS', '10'))
     # Maximum exposure per single market (% of balance)
     MAX_SINGLE_MARKET_PCT = float(os.getenv('MAX_SINGLE_MARKET_PCT', '0.30'))
-    # Stop-loss: close position if ROI drops below this %
-    STOP_LOSS_PCT = float(os.getenv('STOP_LOSS_PCT', '-80'))
-    # Trailing stop: sell if price drops X% from peak (only after 2x gain)
-    TRAILING_STOP_PCT = float(os.getenv('TRAILING_STOP_PCT', '25'))
+    # Risk Management (weather markets are BINARY → no traditional SL/TP)
+    # Instead: hold to resolution OR sell early at profit
+    # "Stop-loss" only applies to LOCK-IN trades that went wrong
+    STOP_LOSS_PCT = float(os.getenv('STOP_LOSS_PCT', '-95'))  # almost never triggers
+    TRAILING_STOP_PCT = float(os.getenv('TRAILING_STOP_PCT', '30'))
+    # PROFIT-TAKE: sell if price rises above this BEFORE resolution (early profit)
+    EARLY_PROFIT_THRESHOLD = float(os.getenv('EARLY_PROFIT_THRESHOLD', '0.60'))
+    # For confident strategy: never sell (hold to resolution)
+    CONFIDENT_NEVER_SELL = os.getenv('CONFIDENT_NEVER_SELL', '1') == '1'
 
     # ═══════════════════════════════════════════════════════════════════
     # FEATURE TOGGLES (enable/disable without breaking anything)
     # ═══════════════════════════════════════════════════════════════════
     SNIPER_ENABLED = os.getenv('SNIPER_ENABLED', '1') == '1'
     SPREAD_ENABLED = os.getenv('SPREAD_STRATEGY_ENABLED', '1') == '1'
+    CONFIDENT_ENABLED = os.getenv('CONFIDENT_ENABLED', '1') == '1'
     LOCKIN_ENABLED = os.getenv('LOCKIN_ENABLED', '1') == '1'
     ML_ENABLED = os.getenv('ML_ENABLED', '1') == '1'
     TELEGRAM_ENABLED = os.getenv('TELEGRAM_ENABLED', '1') == '1'

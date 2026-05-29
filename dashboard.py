@@ -29,6 +29,7 @@ from data.probability_engine import ProbabilityEngine
 from data.market_scanner import MarketScanner, MARKET_CITIES
 from strategies.sniper_strategy import SniperStrategy
 from strategies.spread_strategy import SpreadStrategy
+from strategies.confident_strategy import ConfidentStrategy
 from trading.position_manager import PositionManager
 from bot.telegram_ui import TelegramBot
 from ml.decision_engine import MLDecisionEngine
@@ -43,6 +44,7 @@ class WeatherBot:
         self.scanner = MarketScanner()
         self.sniper = SniperStrategy()
         self.spread = SpreadStrategy()
+        self.confident = ConfidentStrategy()
         self.pm = PositionManager()
         self.ml = MLDecisionEngine()
         self.telegram = TelegramBot(position_manager=self.pm, scanner=self.scanner)
@@ -202,33 +204,68 @@ class WeatherBot:
                     edge=signal.edge, city=city,
                 )
 
-        # Run Spread Strategy
-        spread_signals = self.spread.evaluate(
+        # Run Spread Strategy (89% WR — PRIMARY for safety)
+        if Config.SPREAD_ENABLED:
+            spread_signals = self.spread.evaluate(
+                market.title, bucket_probs, market_prices, token_ids, balance
+            )
+
+            for signal in spread_signals[:1]:
+                self.signals_generated += 1
+                log.info(
+                    f"📊 SPREAD: {city} | {signal.primary_bucket[:25]} | "
+                    f"{len(signal.legs)} legs | Cost=${signal.total_cost:.2f}"
+                )
+                for leg in signal.legs:
+                    pos = self.pm.add_position(
+                        token_id=leg.token_id,
+                        condition_id=condition_ids.get(leg.bucket_label, ''),
+                        entry_price=leg.market_price,
+                        shares=leg.size_usd / leg.market_price if leg.market_price > 0 else 0,
+                        cost_usd=leg.size_usd,
+                        market_title=market.title,
+                        bucket_label=leg.bucket_label,
+                        strategy='spread',
+                        city=city,
+                        slug=market.slug,
+                        resolution_time=market.resolution_time,
+                    )
+                    if pos:
+                        self.trades_placed += 1
+
+        # Run Confident Predictor (45% WR, highest PnL — buy most-likely bucket)
+        confident_signals = self.confident.evaluate(
             market.title, bucket_probs, market_prices, token_ids, balance
         )
 
-        for signal in spread_signals[:1]:
+        for signal in confident_signals[:1]:  # top 1 per market
             self.signals_generated += 1
             log.info(
-                f"📊 SPREAD: {city} | {signal.primary_bucket[:25]} | "
-                f"{len(signal.legs)} legs | Cost=${signal.total_cost:.2f}"
+                f"💎 CONFIDENT: {city} | {signal.bucket_label[:25]} @ "
+                f"${signal.market_price:.3f} | P={signal.our_probability:.0%} | "
+                f"Edge={signal.edge:.0%} | EV={signal.expected_return:.0f}x"
             )
-            for leg in signal.legs:
-                pos = self.pm.add_position(
-                    token_id=leg.token_id,
-                    condition_id=condition_ids.get(leg.bucket_label, ''),
-                    entry_price=leg.market_price,
-                    shares=leg.size_usd / leg.market_price if leg.market_price > 0 else 0,
-                    cost_usd=leg.size_usd,
-                    market_title=market.title,
-                    bucket_label=leg.bucket_label,
-                    strategy='spread',
-                    city=city,
-                    slug=market.slug,
-                    resolution_time=market.resolution_time,
+
+            pos = self.pm.add_position(
+                token_id=signal.token_id,
+                condition_id=condition_ids.get(signal.bucket_label, ''),
+                entry_price=signal.market_price,
+                shares=signal.size_usd / signal.market_price if signal.market_price > 0 else 0,
+                cost_usd=signal.size_usd,
+                market_title=market.title,
+                bucket_label=signal.bucket_label,
+                strategy='confident',
+                city=city,
+                slug=market.slug,
+                resolution_time=market.resolution_time,
+            )
+            if pos:
+                self.trades_placed += 1
+                self.telegram.notify_trade(
+                    'BUY', signal.bucket_label, signal.market_price,
+                    signal.size_usd, pos.shares, 'confident',
+                    edge=signal.edge, city=city,
                 )
-                if pos:
-                    self.trades_placed += 1
 
     def _check_resolutions(self):
         """Check if any positions resolved, redeem winners."""

@@ -200,3 +200,49 @@ Weather markets are BINARY (resolve to $0 or $1). Exit rules adapted:
 5. Set ENABLED_CITIES=ankara,tokyo,seoul,london for focused trading
 6. Wire real POLY_PRIVATE_KEY for live trading
 7. Add Telegram token for real-time alerts
+
+
+
+---
+
+## Session 3 CONTINUED (May 29, 2026, 10:03 UTC) — Strategy Overhaul + No Limiting SL
+
+### New Strategy Backtest Results (90 days, 6 cities, realistic prices)
+
+| Strategy | Win Rate | PnL | ROI | Risk Level |
+|----------|----------|-----|-----|------------|
+| **Confident Buy** | 45.3% | +$1,172 | +410% | MEDIUM (best total PnL) |
+| **Multi-Outcome Spread** | 89.4% | +$780 | +289% | LOW (almost never loses) |
+| **Sniper** | 19.5% | +$542 | +357% | HIGH (compensated by huge payoff) |
+| **Wide Lock-in** | ~95% | +small | +5-10% | VERY LOW (needs big capital) |
+
+### Key Insight: NO STOP-LOSS Should Limit Profits
+Weather markets are BINARY. The outcome is $0.00 or $1.00. Traditional stop-loss makes zero sense:
+- If you buy at $0.05 and price drops to $0.02 → selling locks in a $0.03 loss
+- But if you HOLD, you still have same probability of winning $1.00
+- The price drop just means the market is WRONG, not that you should sell
+- **NEW RULE: Hold to resolution. Only exit early if ML detects forecast reversal.**
+
+### Exit Philosophy (updated)
+| Situation | Action |
+|-----------|--------|
+| Forecast still supports our position | HOLD (no matter what price does) |
+| New forecast REVERSES against us | SELL immediately (adaptive exit) |
+| Price rises to $0.60+ before resolution | SELL (lock early profit) |
+| Resolution: we won | REDEEM → $1.00 per share |
+| Resolution: we lost | Accept loss, move on |
+
+### Live Signals Found (May 31, 2026 markets)
+- **London**: $0.115 entry, 39% edge, 8x EV (confident strategy)
+- **Seoul**: $0.019 entry, 21% edge, 52x EV (sniper)
+- **Seoul**: $0.0085 entry, 21% edge, 117x EV (sniper)
+- **Houston**: 99% P(win) spread, 3 legs (spread)
+
+### What's Improved
+1. **3 complementary strategies** running together (not just 1)
+2. **No limiting SL** — weather is binary, hold to resolution
+3. **Early profit-take at $0.60** — lock gains if price moves in our favor early
+4. **Adaptive exit via ML** — only exit if forecast reverses
+5. **Confident strategy NEW** — 45% WR, highest total PnL in backtest
+6. **Lock-in rule** — only on WIDE buckets ("or higher/below"), never narrow ranges
+7. **Config: CONFIDENT_NEVER_SELL=1** — confident trades ALWAYS hold to resolution
