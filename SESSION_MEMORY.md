@@ -469,3 +469,77 @@ Loop:
 ### Branch: `fix-balance-check`
 PR #4: https://github.com/Foruse959/WEATHER-KI-POL/pull/4
 Merge this to get all fixes on main.
+
+
+
+---
+
+## Session 3 FINAL (May 29, 2026, 12:30 UTC) — Complete CLOB Rewrite + Research
+
+### Deep Research Findings (docs.polymarket.com):
+
+1. **NEGATIVE RISK** — Weather markets are multi-outcome (11 buckets, 1 wins)
+   - Must pass `neg_risk=True` to ALL orders
+   - Routes to NEG_RISK_CTF_EXCHANGE contract
+   - Without this, orders may silently fail or route wrong
+
+2. **WebSocket Channels** (for next session):
+   - `wss://ws-subscriptions-clob.polymarket.com/ws/user` — order fills, cancels
+   - `wss://ws-subscriptions-clob.polymarket.com/ws/market` — real-time prices
+   - Need auth (HMAC headers) for user channel
+
+3. **V2 Order Flow** (correct, from docs + bot-v2):
+   ```python
+   args = OrderArgs(token_id, price, size, side, builder_code)
+   options = PartialCreateOrderOptions(tick_size="0.01", neg_risk=True)
+   signed = client.create_order(args, options)
+   result = client.post_order(signed, OrderType.GTC)
+   ```
+
+4. **Balance API** (correct):
+   ```python
+   params = BalanceAllowanceParams(asset_type=AssetType.COLLATERAL, signature_type=3)
+   client.get_balance_allowance(params)  # returns {balance: microcents}
+   client.update_balance_allowance(params)  # sync allowance
+   ```
+
+5. **Builder Program** (from docs):
+   - Builder code = unique identifier for order attribution
+   - Earn fees on orders routed through your code
+   - Set in .env: POLY_BUILDER_CODE=0x...
+   - Passed in OrderArgs(builder_code=...)
+
+6. **Taker Rebate** (new May 28, 2026):
+   - Volume-based tiers → rebate % on taker fees
+   - At our volume: negligible, but scales with growth
+
+7. **Gasless Operations**:
+   - Redeem: FREE (no gas to claim winnings)
+   - Split/Merge: FREE
+   - Orders: gasless (EIP-712 signed, no on-chain tx)
+
+### What Was Fixed (complete list):
+
+| # | Bug | Fix |
+|---|-----|-----|
+| 1 | `neg_risk` never passed | All orders now `neg_risk=True` |
+| 2 | `create_and_post_order()` | Replaced with `create_order()` + `post_order()` |
+| 3 | No `PartialCreateOrderOptions` | Added with `tick_size="0.01"` |
+| 4 | No `builder_code` in orders | `OrderArgs(builder_code=...)` |
+| 5 | `BuilderConfig` missing | Added to ClobClient init |
+| 6 | Balance "Invalid asset type" | Uses `AssetType.COLLATERAL` correctly |
+| 7 | No balance check before order | `get_live_balance()` called first |
+| 8 | Phantom positions on failure | Only tracks if CLOB confirms |
+| 9 | .env missing builder fields | ALL values documented |
+| 10 | Session memory not updated | APPENDED (this entry) |
+
+### Branch: `fix-balance-check`
+PR: https://github.com/Foruse959/WEATHER-KI-POL/pull/4
+
+### TODO Next Session:
+1. Add WebSocket user channel (know when GTC fills)
+2. Add WebSocket market channel (real-time position prices)
+3. Add `get_open_orders()` polling in scan loop
+4. Add market subscription on position open
+5. Test live with real balance
+6. Add gasless redeem call
