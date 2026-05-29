@@ -221,6 +221,20 @@ class PositionManager:
 
         if Config.is_paper():
             self.paper_balance -= cost_usd
+            log.info(f"\033[92m\033[1m✅ BUY CONFIRMED (PAPER)\033[0m: {city} {bucket_label} "
+                     f"| {shares:.0f}sh @ ${entry_price:.4f} | cost=${cost_usd:.2f} "
+                     f"| TP=${tp_price:.2f}")
+        else:
+            # LIVE: Place real order on CLOB
+            order_result = self._place_live_order(token_id, entry_price, cost_usd, shares)
+            if order_result:
+                pos.id = order_result.get('orderID', pos.id)
+                log.info(f"\033[92m\033[1m✅ BUY CONFIRMED (LIVE)\033[0m: {city} {bucket_label} "
+                         f"| {shares:.0f}sh @ ${entry_price:.4f} | OrderID={pos.id[:12]}... "
+                         f"| IN ORDERBOOK")
+            else:
+                log.warning(f"\033[38;5;208m⚠️ ORDER FAILED: {city} {bucket_label} — tracked as paper\033[0m")
+                self.paper_balance -= cost_usd
 
         # Register market context
         if slug and slug not in self.market_contexts:
@@ -235,6 +249,29 @@ class PositionManager:
         log.info(f"📌 NEW: {city} {bucket_label} | {shares:.0f}sh @ ${entry_price:.4f} "
                  f"| TP=${tp_price:.2f} | SL={Config.STOP_LOSS_PCT}%")
         return pos
+
+    def _place_live_order(self, token_id: str, price: float, size_usd: float, shares: float) -> Optional[Dict]:
+        """Place a real GTC limit order on Polymarket CLOB."""
+        try:
+            from data.clob_client import ClobClient
+            if not hasattr(self, '_clob_client') or self._clob_client is None:
+                self._clob_client = ClobClient()
+                self._clob_client.init_py_clob_client(
+                    private_key=Config.POLY_PRIVATE_KEY,
+                    funder=Config.POLY_FUNDER_ADDRESS or None,
+                    signature_type=Config.POLY_SIGNATURE_TYPE,
+                )
+            result = self._clob_client.place_limit_order(
+                token_id=token_id,
+                side='BUY',
+                price=price,
+                size_pusd=size_usd,
+                expiration='GTC',
+            )
+            return result
+        except Exception as e:
+            log.error(f"\033[91m❌ CLOB order error: {e}\033[0m")
+            return None
 
     def get_open_positions(self) -> List[TrackedPosition]:
         return [p for p in self.positions if p.status == 'open']

@@ -167,7 +167,7 @@ class WeatherBot:
             ml_result = self.ml.validate_signal(
                 city=city, bucket_label=signal.bucket_label,
                 entry_price=signal.market_price, our_prob=signal.our_probability,
-                edge=signal.edge, forecast_temp=signal.reason.split('=')[1].split('°')[0] if '=' in signal.reason else 0,
+                edge=signal.edge, forecast_temp=float(signal.reason.split('Forecast=')[1].split('°')[0]) if 'Forecast=' in signal.reason else 0.0,
                 n_models=3,
                 weekly_context=self.pm.get_weekly_summary(),
             )

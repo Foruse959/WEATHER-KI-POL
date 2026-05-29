@@ -50,14 +50,20 @@ class MLDecisionEngine:
             log.info("🧠 ML Engine: disabled (no API key)")
 
     def validate_signal(self, city: str, bucket_label: str, entry_price: float,
-                        our_prob: float, edge: float, forecast_temp: float,
-                        n_models: int, weekly_context: str = '') -> Dict:
+                        our_prob: float, edge: float, forecast_temp=0.0,
+                        n_models: int = 3, weekly_context: str = '') -> Dict:
         """
         Ask ML to validate a trading signal. Returns:
         {action: 'BUY'|'SKIP', confidence: 0-1, reason: str}
         
         Uses minimal tokens (~150 total).
         """
+        # Ensure forecast_temp is float
+        try:
+            forecast_temp = float(forecast_temp)
+        except (ValueError, TypeError):
+            forecast_temp = 0.0
+
         if not self.enabled:
             return {'action': 'BUY', 'confidence': 0.7, 'reason': 'ML disabled'}
 
