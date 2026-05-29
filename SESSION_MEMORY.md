@@ -322,3 +322,64 @@ With our 3-strategy approach (conservative fixed sizing):
 - After 60 days: ~$500-600
 - After 90 days: ~$2000-3000 (with gentle position scaling)
 - These are CONSERVATIVE estimates with real costs included
+
+
+
+---
+
+## Session 3 CONTINUED (May 29, 2026, 10:25 UTC) — Quant Order Type Analysis
+
+### Real Orderbook Snapshot (Ankara 16°C, May 30):
+```
+BIDS: $0.14 x 700sh | $0.13 x 500sh | $0.12 x 300sh
+ASKS: $0.15 x 7sh   | $0.15 x 23sh  | $0.17 x 5sh
+Spread: $0.01 (4.9% of mid)
+```
+
+### ORDER TYPE DECISION (Quant Analysis):
+
+**We use ALL order types — contextually:**
+
+| Order Type | When | Fee | Why |
+|-----------|------|-----|-----|
+| **GTC LIMIT (primary)** | Default entry | 0% | Weather is slow, place at bid+$0.01, fills in minutes |
+| **GTD (sniper passive)** | Tail buckets | 0% | Place cheap bid early, let market come to us, auto-cancel before resolution |
+| **FOK (emergency)** | Urgent exit | ~1% | Only when ML says SELL NOW (forecast reversed) |
+| **Partial fill** | Thin liquidity | 0% | Accept whatever fills on GTC, even 5 shares |
+
+### Entry Strategy (Tiered Ladder):
+1. Place GTC at `best_bid + $0.01` → sit at top of book (0% fee)
+2. If not filled in 3 minutes → amend to `best_ask` (lift the offer)
+3. If < 2h to resolution → use FOK at best_ask (guaranteed fill)
+
+### Exit Strategy (ML-Driven, no blind SL):
+1. DEFAULT: Hold to resolution (binary $1.00 payout)
+2. If price > $0.60 AND ML confirms → GTC sell at best_bid (lock profit)
+3. If forecast REVERSES → FOK sell immediately (emergency exit)
+4. If market approaching resolution → just let it resolve (no action)
+
+### Passive Sniper Bids (FREE ALPHA):
+- Place GTD buy orders at $0.01-0.05 on tail buckets
+- Expiry = resolution_time - 2 hours
+- If someone panic-sells into our bid → we get free sniper entry
+- Zero effort, zero fee, pure edge
+- This is how Wallet1 gets those $0.001-0.005 entries!
+
+### Why NO tick rejection issues (unlike BTC bot):
+- Weather markets resolve in 24h (not 5 minutes)
+- No latency race → no tick rejection
+- We place GTC and WAIT → guaranteed fill at our price
+- Order sits on book until matched (could be minutes or hours)
+- Our $3 size (30-60 shares) fits easily in 500-700sh bid depth
+
+### Quant Optimization Applied:
+- Place at bid+$0.01 instead of ask → saves $0.01-0.03 per share
+- On $0.50 bet at $0.10 entry → that's 5 shares → saves $0.05-0.15
+- Over 929 trades/60 days → saves $46-139 in spread costs
+- That's 1.5-4.6% of total PnL protected
+
+### What Changed in Code:
+- config.py: added ORDER_ENTRY_MODE='tiered' (GTC→amend→FOK fallback)
+- config.py: GTD_EXPIRY_HOURS_BEFORE = 2 (cancel passive bids 2h before resolution)
+- trading/executor: implements tiered entry with 3-min timeout
+- ml/decision_engine: EXIT decisions now include order_type recommendation
