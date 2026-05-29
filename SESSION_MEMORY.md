@@ -431,3 +431,41 @@ POLY_SIGNATURE_TYPE=3
 - All positions showing profit (Buenos Aires +71%, Beijing +10%, Moscow +15%)
 - The bug was only crashing on SOME cities (where forecast_temp string parse failed)
 - Cities that worked fine: Houston, Chicago, Buenos Aires (US F° markets parse differently)
+
+
+
+---
+
+## Session 3 CONTINUED (May 29, 2026, 12:00 UTC) — Critical Balance Fix from wle.txt
+
+### ROOT CAUSE: `"Invalid asset type"` error
+The V2 CLOB API requires `BalanceAllowanceParams(asset_type=AssetType.COLLATERAL)` — we were calling `get_balance_allowance()` with NO params. The polymarket-bot-v2 uses the exact same pattern (confirmed by reading its clob_client.py line-by-line).
+
+### ALL Fixes Applied (from wle.txt):
+1. **Balance check uses `AssetType.COLLATERAL`** — correct V2 API call
+2. **No phantom positions** — order must succeed BEFORE position is tracked
+3. **Negative shares impossible** — validates shares > 0
+4. **Position recovery on restart** — checks CLOB open orders + data-api
+5. **`.env.example` COMPLETE** — all builder, API, feature toggle values documented
+6. **Funder address** — uses `Config.get_funder_address()` (sig_type routing from bot-v2)
+7. **Big green buy logs** — full block showing city, price, shares, orderID, TP
+
+### What the Bot Should Do Now (correct flow):
+```
+Start → recover_positions_on_start() → check open orders on CLOB
+Loop:
+  1. Check balance (AssetType.COLLATERAL) → cache 10s
+  2. Scan markets (parallel, 0.46s)
+  3. For each signal:
+     - Check: balance >= cost? → NO: skip silently
+     - Check: shares > 0? → NO: skip
+     - Place GTC order on CLOB
+     - CLOB confirms? → track position + green log
+     - CLOB rejects? → DON'T track, move on
+  4. Update open position prices
+  5. Check resolutions / redeem winners
+```
+
+### Branch: `fix-balance-check`
+PR #4: https://github.com/Foruse959/WEATHER-KI-POL/pull/4
+Merge this to get all fixes on main.
