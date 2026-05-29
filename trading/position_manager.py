@@ -184,11 +184,24 @@ class PositionManager:
                      shares: float, cost_usd: float, market_title: str,
                      bucket_label: str, strategy: str, city: str = '',
                      slug: str = '', resolution_time: datetime = None,
-                     edge: float = 0.0) -> TrackedPosition:
-        """Add new position with auto-configured risk rules."""
+                     edge: float = 0.0) -> Optional[TrackedPosition]:
+        """Add new position — checks balance FIRST, only tracks if order succeeds."""
+        # ═══ BALANCE CHECK (critical — prevents flooding errors) ═══
+        if not Config.is_paper():
+            available = self.get_live_balance()
+            if available is not None and cost_usd > available:
+                log.debug(f"⏭️  SKIP {city} {bucket_label[:25]} — need ${cost_usd:.2f} but only ${available:.2f} available")
+                return None
+        else:
+            if cost_usd > self.paper_balance:
+                log.debug(f"⏭️  SKIP {city} {bucket_label[:25]} — insufficient paper balance")
+                return None
+
+        # ═══ VALIDATE SHARES (must be positive) ═══
+        if shares <= 0 or cost_usd <= 0 or entry_price <= 0:
+            return None
+
         # Determine take-profit based on entry price
-        # Cheap entries ($0.01-0.10): take profit at 5x (sell at $0.50)
-        # Mid entries ($0.10-0.30): take profit at 2x (sell when doubled)
         if entry_price < 0.05:
             tp_price = min(0.50, entry_price * 8)
         elif entry_price < 0.15:
@@ -196,45 +209,77 @@ class PositionManager:
         else:
             tp_price = min(0.85, entry_price * 2.5)
 
-        pos = TrackedPosition(
-            id=f"pos_{int(time.time())}_{self.total_trades}",
-            market_title=market_title,
-            bucket_label=bucket_label,
-            token_id=token_id,
-            condition_id=condition_id,
-            entry_price=entry_price,
-            shares=shares,
-            cost_usd=cost_usd,
-            current_price=entry_price,
-            current_value=shares * entry_price,
-            entry_time=datetime.now(timezone.utc),
-            resolution_time=resolution_time,
-            strategy=strategy,
-            city=city,
-            slug=slug,
-            peak_price=entry_price,
-            stop_loss_pct=Config.STOP_LOSS_PCT,
-            take_profit_price=tp_price,
-        )
-        self.positions.append(pos)
-        self.total_trades += 1
-
-        if Config.is_paper():
-            self.paper_balance -= cost_usd
-            log.info(f"\033[92m\033[1m✅ BUY CONFIRMED (PAPER)\033[0m: {city} {bucket_label} "
-                     f"| {shares:.0f}sh @ ${entry_price:.4f} | cost=${cost_usd:.2f} "
-                     f"| TP=${tp_price:.2f}")
-        else:
-            # LIVE: Place real order on CLOB
+        # ═══ LIVE: Place order FIRST, only track if successful ═══
+        if not Config.is_paper():
             order_result = self._place_live_order(token_id, entry_price, cost_usd, shares)
-            if order_result:
-                pos.id = order_result.get('orderID', pos.id)
-                log.info(f"\033[92m\033[1m✅ BUY CONFIRMED (LIVE)\033[0m: {city} {bucket_label} "
-                         f"| {shares:.0f}sh @ ${entry_price:.4f} | OrderID={pos.id[:12]}... "
-                         f"| IN ORDERBOOK")
-            else:
-                log.warning(f"\033[38;5;208m⚠️ ORDER FAILED: {city} {bucket_label} — tracked as paper\033[0m")
-                self.paper_balance -= cost_usd
+            if not order_result:
+                # Order failed — DO NOT track as position
+                return None
+
+            order_id = order_result.get('orderID', f"live_{int(time.time())}")
+            actual_shares = shares  # will be updated when fill confirmed
+
+            pos = TrackedPosition(
+                id=order_id,
+                market_title=market_title,
+                bucket_label=bucket_label,
+                token_id=token_id,
+                condition_id=condition_id,
+                entry_price=entry_price,
+                shares=actual_shares,
+                cost_usd=cost_usd,
+                current_price=entry_price,
+                current_value=actual_shares * entry_price,
+                entry_time=datetime.now(timezone.utc),
+                resolution_time=resolution_time,
+                strategy=strategy,
+                city=city,
+                slug=slug,
+                peak_price=entry_price,
+                stop_loss_pct=Config.STOP_LOSS_PCT,
+                take_profit_price=tp_price,
+            )
+            self.positions.append(pos)
+            self.total_trades += 1
+            # Update cached balance
+            self._live_balance_cache = (self._live_balance_cache[0] if hasattr(self, '_live_balance_cache') and self._live_balance_cache else 0) - cost_usd
+            log.info(f"\033[92m\033[1m{'═'*50}\033[0m")
+            log.info(f"\033[92m\033[1m  ✅ BUY CONFIRMED — LIVE ORDER PLACED\033[0m")
+            log.info(f"\033[92m\033[1m  City:    {city}\033[0m")
+            log.info(f"\033[92m\033[1m  Bucket:  {bucket_label[:45]}\033[0m")
+            log.info(f"\033[92m\033[1m  Price:   ${entry_price:.4f} x {actual_shares:.0f} shares\033[0m")
+            log.info(f"\033[92m\033[1m  Cost:    ${cost_usd:.2f}\033[0m")
+            log.info(f"\033[92m\033[1m  OrderID: {order_id[:16]}...\033[0m")
+            log.info(f"\033[92m\033[1m  TP:      ${tp_price:.2f} | Strategy: {strategy}\033[0m")
+            log.info(f"\033[92m\033[1m{'═'*50}\033[0m")
+
+        else:
+            # PAPER MODE
+            pos = TrackedPosition(
+                id=f"paper_{int(time.time())}_{self.total_trades}",
+                market_title=market_title,
+                bucket_label=bucket_label,
+                token_id=token_id,
+                condition_id=condition_id,
+                entry_price=entry_price,
+                shares=shares,
+                cost_usd=cost_usd,
+                current_price=entry_price,
+                current_value=shares * entry_price,
+                entry_time=datetime.now(timezone.utc),
+                resolution_time=resolution_time,
+                strategy=strategy,
+                city=city,
+                slug=slug,
+                peak_price=entry_price,
+                stop_loss_pct=Config.STOP_LOSS_PCT,
+                take_profit_price=tp_price,
+            )
+            self.positions.append(pos)
+            self.total_trades += 1
+            self.paper_balance -= cost_usd
+            log.info(f"\033[92m📋 PAPER BUY: {city} {bucket_label[:30]} | "
+                     f"{shares:.0f}sh @ ${entry_price:.4f} | cost=${cost_usd:.2f}\033[0m")
 
         # Register market context
         if slug and slug not in self.market_contexts:
@@ -258,9 +303,15 @@ class PositionManager:
                 self._clob_client = ClobClient()
                 self._clob_client.init_py_clob_client(
                     private_key=Config.POLY_PRIVATE_KEY,
-                    funder=Config.POLY_FUNDER_ADDRESS or None,
+                    funder=Config.get_funder_address() or None,
                     signature_type=Config.POLY_SIGNATURE_TYPE,
                 )
+            # Use updateBalanceAllowance before order
+            try:
+                self._clob_client._py_clob_client.update_balance_allowance()
+            except Exception:
+                pass
+
             result = self._clob_client.place_limit_order(
                 token_id=token_id,
                 side='BUY',
@@ -270,8 +321,86 @@ class PositionManager:
             )
             return result
         except Exception as e:
-            log.error(f"\033[91m❌ CLOB order error: {e}\033[0m")
+            log.error(f"\033[91m❌ CLOB error: {e}\033[0m")
             return None
+
+    def get_live_balance(self) -> Optional[float]:
+        """Get REAL available balance from CLOB (with caching)."""
+        now = time.time()
+        if hasattr(self, '_balance_cache_time') and (now - self._balance_cache_time) < 10:
+            return self._balance_cache_value
+
+        try:
+            from data.clob_client import ClobClient
+            if not hasattr(self, '_clob_client') or self._clob_client is None:
+                self._clob_client = ClobClient()
+                self._clob_client.init_py_clob_client(
+                    private_key=Config.POLY_PRIVATE_KEY,
+                    funder=Config.get_funder_address() or None,
+                    signature_type=Config.POLY_SIGNATURE_TYPE,
+                )
+            # Use getBalanceAllowance from CLOB
+            bal_data = self._clob_client._py_clob_client.get_balance_allowance()
+            if bal_data:
+                # Balance is in 6 decimal places (microUSDC)
+                raw_balance = float(bal_data.get('balance', 0))
+                available = raw_balance / 1_000_000  # convert to dollars
+                self._balance_cache_value = available
+                self._balance_cache_time = now
+                return available
+        except Exception as e:
+            log.debug(f"Balance check failed: {e}")
+
+        return None
+
+    def recover_positions_on_start(self):
+        """On bot restart: check CLOB for open orders and existing positions."""
+        if Config.is_paper():
+            return
+
+        log.info("🔄 Recovering positions from CLOB...")
+        try:
+            from data.clob_client import ClobClient
+            if not hasattr(self, '_clob_client') or self._clob_client is None:
+                self._clob_client = ClobClient()
+                self._clob_client.init_py_clob_client(
+                    private_key=Config.POLY_PRIVATE_KEY,
+                    funder=Config.get_funder_address() or None,
+                    signature_type=Config.POLY_SIGNATURE_TYPE,
+                )
+
+            # Get open orders from CLOB
+            open_orders = self._clob_client._py_clob_client.get_open_orders()
+            if open_orders:
+                log.info(f"📋 Found {len(open_orders)} open orders on CLOB")
+                for order in open_orders:
+                    oid = order.get('id', '')[:12]
+                    price = order.get('price', 0)
+                    size = order.get('original_size', 0)
+                    log.info(f"  📌 Order {oid}... | ${price} x {size}sh")
+
+            # Get positions from data-api
+            wallet = Config.POLY_PROXY_WALLET or Config.derive_wallet_address()
+            if wallet:
+                resp = self._session.get(
+                    'https://data-api.polymarket.com/positions',
+                    params={'user': wallet}, timeout=10
+                )
+                if resp.status_code == 200:
+                    positions = resp.json()
+                    weather_pos = [p for p in positions
+                                   if any(w in (p.get('title','') or '').lower()
+                                          for w in ['temperature', '°c', '°f'])
+                                   and float(p.get('size', 0) or 0) > 0]
+                    log.info(f"📋 Found {len(weather_pos)} weather positions on-chain")
+                    for p in weather_pos[:5]:
+                        title = (p.get('title',''))[:40]
+                        size = float(p.get('size', 0))
+                        price = float(p.get('avgPrice', 0))
+                        cur = float(p.get('curPrice', 0))
+                        log.info(f"  📈 {title} | {size:.0f}sh @ ${price:.4f} → ${cur:.4f}")
+        except Exception as e:
+            log.warning(f"Position recovery failed: {e}")
 
     def get_open_positions(self) -> List[TrackedPosition]:
         return [p for p in self.positions if p.status == 'open']
