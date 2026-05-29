@@ -81,8 +81,7 @@ class Config:
     # SCAN SETTINGS
     # ═══════════════════════════════════════════════════════════════════
     SCAN_INTERVAL_SECONDS = int(os.getenv('SCAN_INTERVAL_SECONDS', '60'))
-    # Market categories to scan (weather, climate)
-    MARKET_TAGS = ['weather', 'temperature', 'climate']
+    SCAN_DAYS_AHEAD = int(os.getenv('SCAN_DAYS_AHEAD', '3'))
 
     # ═══════════════════════════════════════════════════════════════════
     # TELEGRAM (optional notifications)
