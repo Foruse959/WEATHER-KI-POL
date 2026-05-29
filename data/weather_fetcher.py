@@ -92,51 +92,46 @@ class WeatherFetcher:
     def _fetch_open_meteo(self, lat: float, lon: float, city: str,
                           target_time: datetime = None) -> List[ForecastPoint]:
         """
-        Open-Meteo: Free API with multiple weather models.
-        Models: ECMWF IFS, GFS, ICON, JMA, GEM, UKMO
+        Open-Meteo: SINGLE batch request with all models for speed.
+        Previously made 5 sequential requests — now 1 batch call.
         """
         results = []
-
-        # Fetch from multiple models for ensemble
         models = ['ecmwf_ifs04', 'gfs_seamless', 'icon_seamless',
                   'jma_seamless', 'gem_seamless']
+        model_confidence = {
+            'ecmwf_ifs04': 0.90, 'gfs_seamless': 0.80,
+            'icon_seamless': 0.82, 'jma_seamless': 0.78, 'gem_seamless': 0.75,
+        }
 
-        for model in models:
-            try:
-                url = "https://api.open-meteo.com/v1/forecast"
-                params = {
-                    'latitude': lat,
-                    'longitude': lon,
-                    'hourly': 'temperature_2m,relative_humidity_2m,wind_speed_10m,precipitation,cloud_cover',
-                    'models': model,
-                    'timezone': 'UTC',
-                    'forecast_days': 3,
-                }
+        url = "https://api.open-meteo.com/v1/forecast"
+        params = {
+            'latitude': lat,
+            'longitude': lon,
+            'hourly': 'temperature_2m,relative_humidity_2m,wind_speed_10m,precipitation,cloud_cover',
+            'models': ','.join(models),
+            'timezone': 'UTC',
+            'forecast_days': 3,
+        }
 
-                resp = self.session.get(url, params=params, timeout=10)
-                if resp.status_code != 200:
-                    continue
+        try:
+            resp = self.session.get(url, params=params, timeout=10)
+            if resp.status_code != 200:
+                return results
 
-                data = resp.json()
-                hourly = data.get('hourly', {})
-                times = hourly.get('time', [])
-                temps = hourly.get('temperature_2m', [])
-                humidity = hourly.get('relative_humidity_2m', [])
-                wind = hourly.get('wind_speed_10m', [])
-                precip = hourly.get('precipitation', [])
-                clouds = hourly.get('cloud_cover', [])
+            data = resp.json()
+            hourly = data.get('hourly', {})
+            times = hourly.get('time', [])
+            if not times:
+                return results
 
-                if not times or not temps:
-                    continue
-
-                # Model confidence weights
-                model_confidence = {
-                    'ecmwf_ifs04': 0.90,
-                    'gfs_seamless': 0.80,
-                    'icon_seamless': 0.82,
-                    'jma_seamless': 0.78,
-                    'gem_seamless': 0.75,
-                }
+            for model in models:
+                # Open-Meteo returns model-suffixed keys or plain keys
+                temp_key = f'temperature_2m_{model}'
+                temps = hourly.get(temp_key, [])
+                if not temps:
+                    temps = hourly.get('temperature_2m', [])
+                    if not temps:
+                        continue
 
                 for i, t_str in enumerate(times):
                     if i >= len(temps) or temps[i] is None:
@@ -145,12 +140,8 @@ class WeatherFetcher:
                         t = datetime.fromisoformat(t_str).replace(tzinfo=timezone.utc)
                     except Exception:
                         continue
-
-                    # If target_time specified, only keep nearby hours
-                    if target_time:
-                        diff = abs((t - target_time).total_seconds())
-                        if diff > 7200:  # within 2 hours
-                            continue
+                    if target_time and abs((t - target_time).total_seconds()) > 7200:
+                        continue
 
                     fp = ForecastPoint(
                         source='open_meteo',
@@ -158,20 +149,11 @@ class WeatherFetcher:
                         location=city or f"{lat},{lon}",
                         timestamp=t,
                         temp_c=temps[i],
-                        humidity_pct=humidity[i] if i < len(humidity) else None,
-                        wind_speed_kmh=wind[i] if i < len(wind) else None,
-                        precip_mm=precip[i] if i < len(precip) else None,
-                        cloud_cover_pct=clouds[i] if i < len(clouds) else None,
                         confidence=model_confidence.get(model, 0.7),
                     )
                     results.append(fp)
-
-                # Small delay between model requests to be nice
-                time.sleep(0.1)
-
-            except Exception as e:
-                log.debug(f"Open-Meteo model {model} failed: {e}")
-                continue
+        except Exception as e:
+            log.debug(f"Open-Meteo batch failed: {e}")
 
         return results
 

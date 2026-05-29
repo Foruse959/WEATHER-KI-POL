@@ -67,6 +67,10 @@ class Config:
     MAX_POSITIONS = int(os.getenv('MAX_POSITIONS', '10'))
     # Maximum exposure per single market (% of balance)
     MAX_SINGLE_MARKET_PCT = float(os.getenv('MAX_SINGLE_MARKET_PCT', '0.30'))
+    # Stop-loss: close position if ROI drops below this %
+    STOP_LOSS_PCT = float(os.getenv('STOP_LOSS_PCT', '-80'))
+    # Trailing stop: sell if price drops X% from peak (only after 2x gain)
+    TRAILING_STOP_PCT = float(os.getenv('TRAILING_STOP_PCT', '25'))
 
     # ═══════════════════════════════════════════════════════════════════
     # MULTI-OUTCOME SPREAD STRATEGY
@@ -88,6 +92,14 @@ class Config:
     # ═══════════════════════════════════════════════════════════════════
     TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN', '')
     TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID', '')
+
+    # ═══════════════════════════════════════════════════════════════════
+    # ML DECISION ENGINE (GPT-5.5 via Freemodel)
+    # ═══════════════════════════════════════════════════════════════════
+    ML_API_URL = os.getenv('ML_API_URL', 'https://vip-sg.freemodel.dev/v1')
+    ML_API_KEY = os.getenv('ML_API_KEY', '')
+    ML_MODEL = os.getenv('ML_MODEL', 'gpt-5.5')
+    ML_ENABLED = os.getenv('ML_ENABLED', '1') == '1'
 
     # ═══════════════════════════════════════════════════════════════════
     # LOGGING

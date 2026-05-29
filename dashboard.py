@@ -31,6 +31,7 @@ from strategies.sniper_strategy import SniperStrategy
 from strategies.spread_strategy import SpreadStrategy
 from trading.position_manager import PositionManager
 from bot.telegram_ui import TelegramBot
+from ml.decision_engine import MLDecisionEngine
 
 
 class WeatherBot:
@@ -43,12 +44,14 @@ class WeatherBot:
         self.sniper = SniperStrategy()
         self.spread = SpreadStrategy()
         self.pm = PositionManager()
+        self.ml = MLDecisionEngine()
         self.telegram = TelegramBot(position_manager=self.pm, scanner=self.scanner)
         self.scan_count = 0
         self.signals_generated = 0
         self.trades_placed = 0
         self._last_resolution_check = 0
         self._last_daily_summary = ''
+        self._last_weekly_record = ''
 
     def run_once(self):
         """Run a single scan cycle."""
@@ -58,10 +61,18 @@ class WeatherBot:
         log.info(f"🔍 SCAN #{self.scan_count} — {now.strftime('%Y-%m-%d %H:%M:%S UTC')}")
         log.info(f"{'═'*60}")
 
-        # Step 0: Check resolutions & redeem (every 5 minutes)
+        # Step 0: Check resolutions, risk triggers, redeem (every 5 minutes)
         if time.time() - self._last_resolution_check > 300:
             self._check_resolutions()
+            self.pm.check_risk_triggers()  # stop-loss / take-profit
+            self.pm.cleanup_contexts()     # free closed market memory
             self._last_resolution_check = time.time()
+
+        # Weekly memory recording
+        week_str = now.strftime('%Y-W%W')
+        if week_str != self._last_weekly_record and now.weekday() == 0:
+            self.pm.record_weekly_stats()
+            self._last_weekly_record = week_str
 
         # Step 1: Discover weather markets
         markets = self.scanner.scan_weather_markets(days_ahead=Config.SCAN_DAYS_AHEAD)
@@ -149,10 +160,24 @@ class WeatherBot:
 
         for signal in sniper_signals[:2]:  # top 2 per market
             self.signals_generated += 1
+
+            # ML VALIDATION: ask GPT-5.5 if we should take this trade
+            ml_result = self.ml.validate_signal(
+                city=city, bucket_label=signal.bucket_label,
+                entry_price=signal.market_price, our_prob=signal.our_probability,
+                edge=signal.edge, forecast_temp=signal.reason.split('=')[1].split('°')[0] if '=' in signal.reason else 0,
+                n_models=3,
+                weekly_context=self.pm.get_weekly_summary(),
+            )
+
+            if ml_result['action'] == 'SKIP' and ml_result['confidence'] > 0.7:
+                log.info(f"🧠 ML SKIP: {signal.bucket_label} — {ml_result['reason']}")
+                continue
+
             log.info(
                 f"🎯 SNIPER: {city} | {signal.bucket_label[:30]} @ "
                 f"${signal.market_price:.4f} | Edge={signal.edge:.1%} | "
-                f"EV={signal.expected_return:.0f}x"
+                f"EV={signal.expected_return:.0f}x | ML={ml_result['action']}({ml_result['confidence']:.0%})"
             )
 
             # Execute
@@ -231,6 +256,10 @@ class WeatherBot:
         log.info(f"  Open:        {stats['open_positions']} positions")
         log.info(f"  Redeemed:    ${stats['total_redeemed']:.2f}")
         log.info(f"  Signals:     {self.signals_generated} generated")
+        ml_status = self.ml.get_status()
+        if ml_status['enabled']:
+            log.info(f"  ML Engine:   {ml_status['model']} ({ml_status['tokens_used']} tokens)")
+        log.info(f"  Contexts:    {stats.get('active_contexts', 0)} active markets")
         log.info(f"{'─'*60}")
 
         if open_pos:

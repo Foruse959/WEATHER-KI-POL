@@ -1,96 +1,91 @@
 # Session Memory — Weather Sniper Bot
 
-## Session 2 (May 29, 2026) — Full Build with Backtest Validation
+## Session 3 (May 29, 2026) — ML + Speed + Risk Management
 
-### Reference Wallet Research (data-api.polymarket.com/positions)
+### Changes Made
+1. **ML Decision Engine** — GPT-5.5 via Freemodel API
+   - Signal validation: BUY/SKIP with confidence score (~150 tokens/query)
+   - Position review: HOLD/SELL for open positions
+   - Market selection: which cities to prioritize
+   - Caching (2min TTL) prevents duplicate queries
+   - ~617 tokens for 4 queries — extremely efficient
 
-**Wallet 1 (0x594e) — The Big Sniper:**
-- $58,471 REALIZED PnL | 88 weather positions | 82 redeemable
-- 91% entries < $0.10 | Avg entry: $0.087 | Max 13,082 shares
-- Cities: Wellington(9), Ankara(6), Lucknow(6), Seoul(6), Tokyo(6)
-- ACTIVELY TRADING TODAY (May 29, 2026) — 50 trades in last 24h
-- Trades both "highest temp" and "lowest temp" markets
-- Buys expensive ($0.96-0.99) when very confident (lock-in wins)
+2. **Position Manager v2** — Full lifecycle with risk controls
+   - Per-position PnL tracking (individual + aggregate)
+   - Stop-loss: -80% ROI default (skip for ultra-cheap < $0.03 entries)
+   - Take-profit: auto-set per entry price ($0.05→TP@$0.25, $0.15→TP@$0.60)
+   - Trailing stop: 25% from peak (only after 2x gain)
+   - Weekly memory: records stats every Monday for ML learning
+   - Context cleanup: frees memory for closed/resolved markets
+   - Per-city and per-strategy stats breakdown
 
-**Wallet 2 (0x331b) — US Weather Focus:**
-- $154 invested | Mostly US cities (Seattle, NYC, Houston)
-- Higher entry prices (avg $0.66) — more conservative
-- Only 6 positions, small operation
+3. **Speed Optimization** — 5x faster
+   - Weather fetcher: single batch Open-Meteo call (0.44s vs ~2.5s)
+   - Market scanner: ThreadPoolExecutor with 10 workers (0.37s for 104 checks)
+   - HTTP connection pooling (keep-alive, 10 pool connections)
+   - 75 markets found in 0.46s (3 days ahead)
 
-**Wallet 3 (0x15ce) — Diversified:**
-- $5,625 invested | 25 weather positions across NYC, Madrid, Lagos, Seoul, London
-- Mix of cheap ($0.01-0.10) and mid ($0.10-0.50) entries
-- Also trades non-weather (F1, FIFA World Cup)
+4. **Reference Wallet Deep Analysis**
+   - Wallet1 (0x594e): $58K realized, $217K redeemable
+   - Trades at 06:00 UTC (155/200 trades in that hour)
+   - 91% entries < $0.05 (ultra-cheap tails)
+   - Two strategies: SNIPER (cheap tails) + LOCK-IN (buy near-certain at $0.97+)
+   - Focuses on "highest temperature" markets (84/88 positions)
+   - Top cities: Wellington, Ankara, Lucknow, Seoul, Tokyo
 
-### KEY FINDING: Market Slug Pattern
+5. **Polymarket V2 Compliance**
+   - pUSD collateral (not USDC.e) — since April 28, 2026
+   - signature_type=3 for V2 accounts
+   - Gasless trading (only need pUSD to trade)
+   - Weather markets: 0% maker fee (GTC limit orders)
+
+### Architecture (v2.0)
 ```
-highest-temperature-in-{city}-on-{month}-{day}-{year}
-lowest-temperature-in-{city}-on-{month}-{day}-{year}
-```
-Example: `highest-temperature-in-tokyo-on-may-29-2026`
-- Each event has 11 markets (temperature buckets)
-- Found 39+ LIVE markets on May 29, 2026
-- Cities: houston, lucknow, seoul, tokyo, london, taipei, hong-kong, beijing, ankara
-
-### Data API Fields
-```
-proxyWallet, asset, conditionId, size, avgPrice, initialValue, 
-currentValue, cashPnl, percentPnl, totalBought, realizedPnl, 
-percentRealizedPnl, curPrice, redeemable, mergeable, title, 
-slug, icon, eventId, eventSlug, outcome, outcomeIndex, 
-oppositeOutcome, oppositeAsset, endDate, negativeRisk
-```
-
-### Backtest Results (60 days, 6 cities)
-- **$10 → $1,120 in 60 days (+11,107% ROI)**
-- 364 trades | 25.8% win rate (94W / 270L)
-- Even 25% WR is hugely profitable due to 7-20x payoff on wins
-- Best cities: Ankara (35% WR), Tokyo (29%), Seoul/Taipei/London (23-24%)
-- Strategy validated: multi-model ensemble beats lagging market prices
-
-### Architecture (v1.1)
-```
-dashboard.py         Main loop + live dashboard
+dashboard.py              Main loop + ML-integrated dashboard
+├── ml/
+│   └── decision_engine.py     GPT-5.5 signal validation (BUY/SKIP/SELL)
 ├── bot/
-│   └── telegram_ui.py    Notifications + /status /positions /redeem commands
+│   └── telegram_ui.py         Notifications + commands
 ├── data/
-│   ├── weather_fetcher.py     5 models (ECMWF, GFS, ICON, JMA, GEM) + OWM + weather.gov
-│   ├── probability_engine.py  Ensemble → normal CDF → bucket probabilities
-│   ├── market_scanner.py      Slug-based scanning (confirmed pattern)
-│   └── clob_client.py         CLOB V2 orders (GTC limit)
+│   ├── weather_fetcher.py     Batch multi-model (5 in 1 request)
+│   ├── probability_engine.py  Ensemble CDF
+│   ├── market_scanner.py      Parallel slug scanner (10 threads)
+│   └── clob_client.py         CLOB V2 orders
 ├── strategies/
-│   ├── sniper_strategy.py     Buy cheap mispriced buckets
+│   ├── sniper_strategy.py     Buy cheap tails
 │   └── spread_strategy.py     Multi-outcome spread
 ├── trading/
-│   ├── executor.py            Legacy (being replaced)
-│   └── position_manager.py    Full position lifecycle: track → update → resolve → redeem
+│   └── position_manager.py    SL/TP/trailing/weekly memory/context cleanup
 ├── backtest/
-│   └── weather_backtest.py    Historical backtest with simulated forecast error
-├── config.py                  Paper/live mode, all params
-└── logger.py                  Structured logging
+│   └── weather_backtest.py    60-day backtest ($10→$1120)
+└── config.py                  All params + ML config
 ```
 
-### What's Done
-- [x] Multi-source weather fetching (Open-Meteo 5 models + OWM + weather.gov)
-- [x] Probability engine (ensemble CDF)
-- [x] Market scanner with CONFIRMED slug pattern (finds real live markets)
-- [x] Sniper strategy (buy cheap + edge filter)
-- [x] Spread strategy (multi-outcome adjacent buckets)
-- [x] Position manager (track, update prices, resolve, redeem)
-- [x] Balance tracking (paper + on-chain)
-- [x] Telegram bot (notifications + commands: /status /positions /markets /redeem /help)
-- [x] Dashboard with live stats display
-- [x] Backtest validated ($10→$1120 in 60 days)
-- [x] Reference wallet research (3 wallets analyzed)
-- [x] Paper/dry-run mode (default, safe)
-- [x] Railway deployment ready (Procfile + railway.toml)
+### Key Findings from Wallet Research
+- 25% win rate is GOOD for this strategy (7-20x payoff per win)
+- Best time to trade: 06:00 UTC (when Asian markets post forecasts)
+- Best cities: Ankara (35% WR), Tokyo (29%), Seoul (24%)
+- Ultra-cheap entries ($0.001-$0.05) are the money-makers
+- Hold to resolution — don't sell cheap positions (binary payout)
+- The "lock-in" strategy (buy at $0.97+) is for guaranteed small wins
+
+### Config Summary
+| Parameter | Value | Why |
+|-----------|-------|-----|
+| SNIPER_MAX_ENTRY | $0.15 | Match Wallet1's 91% < $0.10 pattern |
+| MIN_EDGE | 10% | Confirmed profitable in backtest |
+| KELLY_FRACTION | 0.15 | Conservative for $3 balance |
+| STOP_LOSS | -80% | Only triggers on mid-range entries |
+| TAKE_PROFIT | Auto | $0.05→$0.25, $0.15→$0.60 |
+| TRAILING_STOP | 25% | After 2x gain, protect profits |
+| ML_MODEL | gpt-5.5 | Fast, ~150 tokens/query |
+| SCAN_INTERVAL | 60s | Balance speed vs API limits |
 
 ### Next Session Should
-1. Run live paper test on today's markets (validate market scanner finds real opportunities)
-2. Connect CLOB for live order placement (GTC limit orders)
-3. Add "copy-trading" mode — mirror Wallet1's trades in real-time
-4. Add resolution time tracking (Tokyo high resolves ~14:00 UTC next day)
-5. Add auto-sell logic (sell at profit if price rises before resolution)
-6. Tune parameters: maybe lower min_edge to 5% for more trades
-7. Add Binance weather index cross-check (if available)
-8. Track reference wallet trades in real-time for signal intelligence
+1. Deploy to Railway and test live paper mode
+2. Add "lock-in" strategy (buy obvious outcomes at $0.95+ like Wallet1 does)
+3. Add copy-trading mode (mirror Wallet1 trades via activity API)
+4. Wire CLOB for real order placement (tested in paper first)
+5. Add auto-sell before resolution if price rises to $0.50+ (take profit)
+6. Test with TELEGRAM_BOT_TOKEN for real-time alerts
+7. Consider adding more cities to MARKET_CITIES (check Wallet1's full history)

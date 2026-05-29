@@ -71,7 +71,7 @@ MARKET_CITIES = {
 
 
 class MarketScanner:
-    """Scan Polymarket for active weather markets."""
+    """Scan Polymarket for active weather markets — optimized for speed."""
 
     def __init__(self):
         self.base_url = Config.GAMMA_API_URL
@@ -79,14 +79,20 @@ class MarketScanner:
         self.session.headers.update({
             'User-Agent': f'WeatherSniper/{Config.VERSION}',
             'Accept': 'application/json',
+            'Connection': 'keep-alive',
         })
+        # Connection pooling for speed
+        adapter = requests.adapters.HTTPAdapter(
+            pool_connections=10, pool_maxsize=20, max_retries=1
+        )
+        self.session.mount('https://', adapter)
         self._cache: Dict[str, Tuple[float, List[WeatherMarket]]] = {}
         self._cache_ttl = 30.0
 
     def scan_weather_markets(self, days_ahead: int = 3) -> List[WeatherMarket]:
         """
         Discover all active weather markets using confirmed slug pattern.
-        Scans today + next N days for all known cities.
+        Uses parallel fetching for speed (ThreadPoolExecutor).
         """
         cache_key = f'weather_scan_{days_ahead}'
         now = time.time()
@@ -95,9 +101,13 @@ class MarketScanner:
             if now - cached_time < self._cache_ttl:
                 return cached
 
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
         markets = []
         today = datetime.now(timezone.utc)
 
+        # Build all slug tasks
+        tasks = []
         for day_offset in range(0, days_ahead + 1):
             target = today + timedelta(days=day_offset)
             month_str = target.strftime('%B').lower()
@@ -107,17 +117,25 @@ class MarketScanner:
             for city_slug, (city_name, country, temp_unit) in MARKET_CITIES.items():
                 for temp_type in ['highest-temperature', 'lowest-temperature']:
                     slug = f'{temp_type}-in-{city_slug}-on-{month_str}-{day_str}-{year_str}'
-                    try:
-                        market = self._fetch_by_slug(slug, city_name, country, temp_type, temp_unit, target)
-                        if market:
-                            markets.append(market)
-                    except Exception as e:
-                        log.debug(f"Slug fetch error {slug}: {e}")
+                    tasks.append((slug, city_name, country, temp_type, temp_unit, target))
 
-        # Sort by date (soonest first), then volume
+        # Parallel fetch (10 workers for speed)
+        with ThreadPoolExecutor(max_workers=10) as executor:
+            futures = {
+                executor.submit(self._fetch_by_slug, *task): task
+                for task in tasks
+            }
+            for future in as_completed(futures):
+                try:
+                    market = future.result()
+                    if market:
+                        markets.append(market)
+                except Exception:
+                    pass
+
         markets.sort(key=lambda m: (m.resolution_time or datetime.max.replace(tzinfo=timezone.utc), -m.volume))
         self._cache[cache_key] = (now, markets)
-        log.info(f"Found {len(markets)} active weather markets ({days_ahead} days ahead)")
+        log.info(f"Found {len(markets)} active weather markets ({days_ahead}d ahead, {len(tasks)} checked)")
         return markets
 
     def _fetch_by_slug(self, slug: str, city: str, country: str,
