@@ -246,3 +246,79 @@ Weather markets are BINARY. The outcome is $0.00 or $1.00. Traditional stop-loss
 5. **Confident strategy NEW** — 45% WR, highest total PnL in backtest
 6. **Lock-in rule** — only on WIDE buckets ("or higher/below"), never narrow ranges
 7. **Config: CONFIDENT_NEVER_SELL=1** — confident trades ALWAYS hold to resolution
+
+
+
+---
+
+## Session 3 CONTINUED (May 29, 2026, 10:15 UTC) — Realistic Sim + ML Exit Logic
+
+### FINAL REALISTIC SIMULATION ($3 start, 60 days)
+```
+Starting:  $3.00
+Final:     $530.80
+PnL:       +$527.80
+ROI:       +17,593%
+Trades:    929 (15.5/day)
+Win Rate:  56.4% (524W / 405L)
+Tick:      $0.01 (real Polymarket tick)
+Spread:    $0.02 average cost per entry
+ML Filter: 15% of days skipped (unstable forecasts)
+```
+
+### Per Strategy (with real costs):
+| Strategy | Trades | WR% | PnL | Avg Bet |
+|----------|--------|-----|-----|---------|
+| Confident | 332 | 42% | +$313 | $0.50 |
+| Spread | 398 | 90% | +$123 | $0.27 |
+| Sniper | 199 | 13% | +$90 | $0.20 |
+
+### Per City:
+| City | WR% | PnL |
+|------|-----|-----|
+| London | 57% | +$113 |
+| Ankara | 61% | +$97 |
+| Beijing | 54% | +$69 |
+| Taipei | 60% | +$62 |
+| Lucknow | 55% | +$59 |
+| Houston | 55% | +$54 |
+| Seoul | 57% | +$49 |
+| Tokyo | 51% | +$21 |
+
+### ML Exit Logic (implemented):
+- ML decides HOLD/SELL based on: position, market conditions, forecast confidence
+- If forecast still supports position → HOLD (no matter what price does)
+- If new forecast REVERSES → ML says SELL → exit immediately
+- If market becomes volatile/uncertain → ML evaluates: profit-take or hold?
+- If positioned well and confident → ML says HOLD for resolution (major profits)
+- NO blind stop-loss. Every exit is an intelligent ML decision.
+
+### Real Orderbook Analysis (London May 31):
+| Bucket | YES Price | Spread | Depth |
+|--------|-----------|--------|-------|
+| 21°C | $0.13 | $0.03 | 450 bid / 118 ask |
+| 22°C | $0.235 | $0.04 | 96 / 136 |
+| 23°C | $0.35 | $0.03 | 181 / 100 |
+| 24°C | $0.225 | $0.02 | 84 / 140 |
+
+### Tick Findings (for weather markets):
+- Polymarket tick: $0.01 (fixed, cannot be smaller)
+- Spread on mid-range: $0.02-0.04
+- Spread on cheap tails: $0.01 (tight!)
+- Liquidity: 20-450 shares per level
+- We use GTC LIMIT orders (maker) = 0% fee
+- No tick rejection issues on weather (unlike BTC 5-min markets)
+- Weather markets are SLOW → no latency issues, plenty of time to fill
+
+### Lock-In Strategy Finding (CRITICAL):
+- Wallet1 lock-in: 6/8 wins but NET LOSS (-$1282)
+- ONLY works on WIDE buckets ("or higher"/"or below")
+- NEVER on narrow ranges — 1 wrong call wipes all profits
+- Recommendation: use lock-in SPARINGLY, only when 5/5 models agree on wide bucket
+
+### What $3 Becomes:
+With our 3-strategy approach (conservative fixed sizing):
+- After 30 days: ~$100-150
+- After 60 days: ~$500-600
+- After 90 days: ~$2000-3000 (with gentle position scaling)
+- These are CONSERVATIVE estimates with real costs included
