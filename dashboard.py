@@ -330,6 +330,9 @@ class WeatherBot:
         self.telegram.start_polling()
         self.telegram.send("🚀 <b>Weather Sniper Bot started!</b>\nUse /help for commands.")
 
+        # Recover positions from CLOB on restart
+        self.pm.recover_positions_on_start()
+
         try:
             while True:
                 try:
