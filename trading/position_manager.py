@@ -324,6 +324,7 @@ class PositionManager:
                 price=price,
                 size_pusd=size_usd,
                 expiration='GTC',
+                neg_risk=True,  # Weather markets are ALWAYS neg_risk
             )
             return result
         except Exception as e:
