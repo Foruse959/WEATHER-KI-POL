@@ -329,6 +329,15 @@ CITY_COORDS = {
 
 
 def get_city_coords(city_name: str) -> Optional[Tuple[float, float]]:
-    """Look up city coordinates. Returns (lat, lon) or None."""
+    """Look up coordinates for a city — AIRPORT FIRST (Polymarket resolution station),
+    fall back to city center, then to CITY_COORDS database."""
     key = city_name.lower().strip()
+
+    # 1. Check weather_stations for EXACT airport coordinates (THE EDGE)
+    from data.weather_stations import get_airport_coords
+    airport = get_airport_coords(key)
+    if airport:
+        return airport
+
+    # 2. Fall back to city center coordinates
     return CITY_COORDS.get(key)

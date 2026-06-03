@@ -186,20 +186,43 @@ class PositionManager:
                      slug: str = '', resolution_time: datetime = None,
                      edge: float = 0.0) -> Optional[TrackedPosition]:
         """Add new position — checks balance FIRST, only tracks if order succeeds."""
-        # ═══ BALANCE CHECK (critical — prevents flooding errors) ═══
-        if not Config.is_paper():
-            available = self.get_live_balance()
-            if available is not None and cost_usd > available:
-                log.debug(f"⏭️  SKIP {city} {bucket_label[:25]} — need ${cost_usd:.2f} but only ${available:.2f} available")
-                return None
-        else:
-            if cost_usd > self.paper_balance:
-                log.debug(f"⏭️  SKIP {city} {bucket_label[:25]} — insufficient paper balance")
-                return None
-
         # ═══ VALIDATE SHARES (must be positive) ═══
         if shares <= 0 or cost_usd <= 0 or entry_price <= 0:
             return None
+
+        # ═══ DUPLICATE GUARD ═══
+        # Block re-buying the SAME outcome with the SAME strategy while an order
+        # for it is still open or pending. A DIFFERENT strategy on the same market
+        # (e.g. spread leg vs confident) is allowed.
+        for p in self.positions:
+            if (p.token_id == token_id and p.strategy == strategy
+                    and p.status in ('open', 'pending')):
+                log.debug(f"⏭️  SKIP dup: {city} {bucket_label[:25]} already {p.status} [{strategy}]")
+                return None
+
+        # ═══ MIN ORDER: GTC needs ≥5 shares AND ≥ $1 notional ═══
+        # Polymarket GTC floors to 5 shares; FOK/FAK need ≥ $1. We require both
+        # (max of the two) so no order is dust. Applied in PAPER too so paper
+        # simulates exactly what the venue would accept — otherwise grade/liquidity
+        # size-trimming can produce sub-minimum "0-share" orders that can't fill.
+        # Bump the spend up to the minimum (capped at balance by the check below).
+        min_notional = max(Config.MIN_ORDER_SIZE, round(5 * entry_price, 2))
+        if cost_usd < min_notional:
+            cost_usd = min_notional
+            shares = cost_usd / entry_price
+
+        # ═══ BALANCE CHECK (after min-order bump so it reflects real spend) ═══
+        # Skip (don't retry) when balance is insufficient — surfaced at INFO so
+        # it's visible. Freed balance from sells/resolutions is picked up next scan.
+        if not Config.is_paper():
+            available = self.get_live_balance()   # CLOB query (10s cache, force-refreshed after each order)
+            if available is not None and cost_usd > available:
+                log.info(f"⏭️  SKIP {city} {bucket_label[:22]} — need ${cost_usd:.2f}, only ${available:.2f} (waiting for positions to resolve)")
+                return None
+        else:
+            if cost_usd > self.paper_balance:
+                log.info(f"⏭️  SKIP {city} {bucket_label[:22]} — need ${cost_usd:.2f}, only ${self.paper_balance:.2f} (waiting for positions to resolve)")
+                return None
 
         # Determine take-profit based on entry price
         if entry_price < 0.05:
@@ -209,27 +232,32 @@ class PositionManager:
         else:
             tp_price = min(0.85, entry_price * 2.5)
 
-        # ═══ LIVE: Place order FIRST, only track if successful ═══
+        # ═══ LIVE: Place order FIRST. GTC sits in book until filled. ═══
+        # CRITICAL FIX: a GTC order != a filled position. Track as PENDING
+        # until the fill is confirmed. This prevents phantom positions (wle.txt bug #1).
         if not Config.is_paper():
             order_result = self._place_live_order(token_id, entry_price, cost_usd, shares)
             if not order_result:
-                # Order failed — DO NOT track as position
-                return None
+                return None  # Order failed — DO NOT track
 
             order_id = order_result.get('orderID', f"live_{int(time.time())}")
-            actual_shares = shares  # will be updated when fill confirmed
 
-            pos = TrackedPosition(
+            # Force-refresh balance after placing order (prevents stale-balance cascade)
+            if hasattr(self, '_balance_cache_time'):
+                self._balance_cache_time = 0
+
+            # Track as PENDING — NOT a filled position yet
+            pending = TrackedPosition(
                 id=order_id,
                 market_title=market_title,
                 bucket_label=bucket_label,
                 token_id=token_id,
                 condition_id=condition_id,
                 entry_price=entry_price,
-                shares=actual_shares,
+                shares=shares,
                 cost_usd=cost_usd,
                 current_price=entry_price,
-                current_value=actual_shares * entry_price,
+                current_value=shares * entry_price,
                 entry_time=datetime.now(timezone.utc),
                 resolution_time=resolution_time,
                 strategy=strategy,
@@ -238,20 +266,16 @@ class PositionManager:
                 peak_price=entry_price,
                 stop_loss_pct=Config.STOP_LOSS_PCT,
                 take_profit_price=tp_price,
+                status='pending',    # <-- KEY FIX: pending, not open
             )
-            self.positions.append(pos)
+            self.positions.append(pending)
             self.total_trades += 1
-            # Update cached balance
-            self._live_balance_cache = (self._live_balance_cache[0] if hasattr(self, '_live_balance_cache') and self._live_balance_cache else 0) - cost_usd
-            log.info(f"\033[92m\033[1m{'═'*50}\033[0m")
-            log.info(f"\033[92m\033[1m  ✅ BUY CONFIRMED — LIVE ORDER PLACED\033[0m")
-            log.info(f"\033[92m\033[1m  City:    {city}\033[0m")
-            log.info(f"\033[92m\033[1m  Bucket:  {bucket_label[:45]}\033[0m")
-            log.info(f"\033[92m\033[1m  Price:   ${entry_price:.4f} x {actual_shares:.0f} shares\033[0m")
-            log.info(f"\033[92m\033[1m  Cost:    ${cost_usd:.2f}\033[0m")
-            log.info(f"\033[92m\033[1m  OrderID: {order_id[:16]}...\033[0m")
-            log.info(f"\033[92m\033[1m  TP:      ${tp_price:.2f} | Strategy: {strategy}\033[0m")
-            log.info(f"\033[92m\033[1m{'═'*50}\033[0m")
+            pos = pending  # shared tail below returns `pos`
+            log.info(
+                f"  ORDER PLACED  {city} {bucket_label[:35]}  "
+                f"{shares:.0f}sh @ ${entry_price:.4f}  ${cost_usd:.2f}  "
+                f"ID={order_id[:20]}...  [{strategy}]  STATUS: PENDING (awaiting fill)"
+            )
 
         else:
             # PAPER MODE
@@ -395,17 +419,25 @@ class PositionManager:
                     signature_type=Config.POLY_SIGNATURE_TYPE,
                 )
 
-            # Get open orders from CLOB
-            open_orders = self._clob_client._py_clob_client.get_open_orders()
-            if open_orders:
-                log.info(f"📋 Found {len(open_orders)} open orders on CLOB")
-                for order in open_orders:
-                    oid = order.get('id', '')[:12]
-                    price = order.get('price', 0)
-                    size = order.get('original_size', 0)
-                    log.info(f"  📌 Order {oid}... | ${price} x {size}sh")
+            # Get open orders from CLOB (needs valid API key)
+            try:
+                open_orders = self._clob_client._py_clob_client.get_open_orders()
+                if open_orders:
+                    log.info(f"  Found {len(open_orders)} open orders on CLOB")
+                    for order in open_orders:
+                        oid = order.get('id', '')[:12]
+                        price = order.get('price', 0)
+                        size = order.get('original_size', 0)
+                        log.info(f"    Order {oid}... | ${price} x {size}sh")
+            except Exception as ce:
+                if '401' in str(ce) or 'Unauthorized' in str(ce):
+                    log.warning("  CLOB API key invalid/expired — skipping order recovery.")
+                    log.warning("  >> Re-derive your API creds: the bot will auto-derive if you")
+                    log.warning("  >> clear POLY_API_KEY/SECRET/PASSPHRASE from .env (keep private key).")
+                else:
+                    log.warning(f"  CLOB order recovery skipped: {str(ce)[:80]}")
 
-            # Get positions from data-api
+            # Get positions from data-api (PUBLIC — no API key needed, works even on 401)
             wallet = Config.POLY_PROXY_WALLET or Config.derive_wallet_address()
             if wallet:
                 resp = self._session.get(
@@ -429,7 +461,46 @@ class PositionManager:
             log.warning(f"Position recovery failed: {e}")
 
     def get_open_positions(self) -> List[TrackedPosition]:
+        """Return FILLED open positions (NOT pending GTC orders still in the book)."""
         return [p for p in self.positions if p.status == 'open']
+
+    def get_pending_orders(self) -> List[TrackedPosition]:
+        """Return orders placed but not yet filled (GTC sitting in the book)."""
+        return [p for p in self.positions if p.status == 'pending']
+
+    def sync_pending_orders(self):
+        """Poll CLOB to check if pending GTC orders have filled. Moves filled
+        orders from 'pending' to 'open' status. THIS is the missing piece that
+        caused the phantom position bug."""
+        pending = self.get_pending_orders()
+        if not pending:
+            return
+
+        for pos in pending:
+            try:
+                # Check if order filled via CLOB status
+                if not hasattr(self, '_clob_client') or not self._clob_client:
+                    continue
+                status = self._clob_client.get_order_status(pos.id)
+                if status:
+                    filled = float(status.get('filled', 0) or status.get('size_matched', 0) or 0)
+                    if filled > 0:
+                        actual_price = float(status.get('price', pos.entry_price))
+                        pos.shares = filled
+                        pos.cost_usd = filled * actual_price
+                        pos.current_price = actual_price
+                        pos.current_value = filled * actual_price
+                        pos.entry_price = actual_price
+                        pos.status = 'open'
+                        if not Config.is_paper():
+                            self.paper_balance -= pos.cost_usd
+                        log.info(
+                            f"  FILLED  {pos.city} {pos.bucket_label[:35]}  "
+                            f"{filled:.0f}sh @ ${actual_price:.4f}  "
+                            f"${pos.cost_usd:.2f} cost"
+                        )
+            except Exception as e:
+                log.debug(f"  Order sync {pos.id[:16]}...: {e}")
 
     def get_positions_by_status(self, status: str) -> List[TrackedPosition]:
         return [p for p in self.positions if p.status == status]
@@ -773,6 +844,56 @@ class PositionManager:
                 stats[p.strategy]['wins'] += 1
             stats[p.strategy]['pnl'] += p.pnl if p.status != 'open' else p.unrealized_pnl
         return stats
+
+    def record_performance_snapshot(self) -> str:
+        """Append a timestamped performance snapshot to disk and log a one-line
+        summary. This is our OWN-bot simulation record (per-strategy/per-city
+        win-rate, PnL, ROI over time) — distinct from the offline backtest, so we
+        can see how the bot actually performs as it runs. Returns the summary."""
+        import json
+        stats = self.get_stats()
+        by_strategy = self.get_per_strategy_stats()
+        snap = {
+            'ts': datetime.now(timezone.utc).isoformat(),
+            'mode': stats['mode'],
+            'balance': round(stats['balance'], 2),
+            'portfolio_value': round(stats['portfolio_value'], 2),
+            'total_pnl': round(stats['total_pnl'], 2),
+            'roi_pct': round(stats['roi_pct'], 1),
+            'trades': stats['total_trades'],
+            'open': stats['open_positions'],
+            'wins': stats['wins'], 'losses': stats['losses'],
+            'win_rate': round(stats['win_rate'], 1),
+            'by_strategy': by_strategy,
+            'by_city': self.get_per_city_stats(),
+        }
+        try:
+            os.makedirs('backtest/results', exist_ok=True)
+            path = 'backtest/results/paper_performance.json'
+            history = []
+            if os.path.exists(path):
+                try:
+                    with open(path) as f:
+                        history = json.load(f)
+                except Exception:
+                    history = []
+            history.append(snap)
+            history = history[-500:]  # bound file size
+            with open(path, 'w') as f:
+                json.dump(history, f, indent=2)
+        except Exception as e:
+            log.debug(f"perf snapshot save failed: {e}")
+
+        parts = []
+        for strat, s in by_strategy.items():
+            wr = (s['wins'] / max(1, s['trades'])) * 100
+            parts.append(f"{strat}:{s['trades']}t {wr:.0f}%WR ${s['pnl']:+.2f}")
+        summary = (f"📈 PERF [{snap['mode']}] bal=${snap['balance']:.2f} "
+                   f"PnL=${snap['total_pnl']:+.2f} ({snap['roi_pct']:+.0f}%) "
+                   f"WR={snap['win_rate']:.0f}% {snap['wins']}W/{snap['losses']}L"
+                   + (" | " + " | ".join(parts) if parts else ""))
+        log.info(summary)
+        return summary
 
 
     # ═══════════════════════════════════════════════════════════════

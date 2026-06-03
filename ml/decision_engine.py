@@ -44,10 +44,27 @@ class MLDecisionEngine:
         self._cache_ttl = 120  # 2 minutes
         self._total_tokens_used = 0
 
+        # Local model fallback (no API needed)
+        self._local_model = None
+        self._api_failures = 0
+        self._api_failure_window = 0
+        self._max_api_failures = 5  # switch to local after 5 failures
+
         if self.enabled:
-            log.info(f"🧠 ML Engine: {self.model} via {self.base_url[:30]}...")
+            log.info(f"  ML Engine: {self.model} via {self.base_url[:30]}...")
         else:
-            log.info("🧠 ML Engine: disabled (no API key)")
+            log.info("  ML Engine: API disabled — using local model only")
+
+    @property
+    def local_model(self):
+        """Lazy-load local model."""
+        if self._local_model is None:
+            try:
+                from ml.local_model import get_local_model
+                self._local_model = get_local_model()
+            except Exception as e:
+                log.warning(f"  Local model init failed: {e}")
+        return self._local_model
 
     def validate_signal(self, city: str, bucket_label: str, entry_price: float,
                         our_prob: float, edge: float, forecast_temp=0.0,
@@ -65,6 +82,17 @@ class MLDecisionEngine:
             forecast_temp = 0.0
 
         if not self.enabled:
+            # Use local model when API is disabled
+            if self.local_model is not None:
+                return self.local_model.predict_entry({
+                    "edge": edge, "edge_ratio": our_prob / max(entry_price, 0.01),
+                    "n_models": n_models, "confidence": 0.6,
+                    "market_spread_bps": 500, "market_price": entry_price,
+                    "forecast_std": 1.5, "lead_hours": 24,
+                    "city_win_rate": 0.09, "bucket_position": entry_price,
+                    "hour_of_day": datetime.now(timezone.utc).hour,
+                    "day_of_week": datetime.now(timezone.utc).weekday(),
+                })
             return {'action': 'BUY', 'confidence': 0.7, 'reason': 'ML disabled'}
 
         # Check cache
@@ -151,8 +179,10 @@ class MLDecisionEngine:
             )
 
             if resp.status_code != 200:
-                log.debug(f"ML API {resp.status_code}: {resp.text[:100]}")
-                return {'action': 'BUY', 'confidence': 0.5, 'reason': 'API error'}
+                self._api_failures += 1
+                log.warning(f"  ML API FAIL [{self._api_failures}]: HTTP {resp.status_code} — {resp.text[:80]}")
+                # Fall back to local model
+                return self._local_fallback('BUY', f'API HTTP {resp.status_code}')
 
             data = resp.json()
             content = data.get('choices', [{}])[0].get('message', {}).get('content', '{}')
@@ -165,11 +195,27 @@ class MLDecisionEngine:
             return self._parse_response(content)
 
         except requests.Timeout:
-            log.debug("ML API timeout (5s)")
-            return {'action': 'BUY', 'confidence': 0.5, 'reason': 'timeout'}
+            self._api_failures += 1
+            log.warning(f"  ML API TIMEOUT [{self._api_failures}] — using local model")
+            return self._local_fallback('BUY', 'API timeout')
         except Exception as e:
-            log.debug(f"ML query failed: {e}")
-            return {'action': 'BUY', 'confidence': 0.5, 'reason': str(e)[:20]}
+            self._api_failures += 1
+            log.warning(f"  ML API ERROR [{self._api_failures}]: {str(e)[:80]}")
+            return self._local_fallback('BUY', f'API: {str(e)[:30]}')
+
+    def _local_fallback(self, default_action: str, reason: str) -> dict:
+        """Use local XGBoost/rules model when API fails."""
+        if self.local_model is not None:
+            # Local model needs features — use minimal defaults for fallback
+            result = self.local_model._rules_predict({
+                "edge": 0.05, "edge_ratio": 2.0, "n_models": 3,
+                "confidence": 0.6, "market_spread_bps": 500,
+                "market_price": 0.1,
+            })
+            result["reason"] = f"local_fallback: {reason}"
+            return result
+        return {"action": default_action, "confidence": 0.5,
+                "reason": f"fallback: {reason}", "source": "fallback"}
 
     def _parse_response(self, content: str) -> Dict:
         """Parse ML model response (handles various JSON formats)."""
@@ -210,9 +256,12 @@ class MLDecisionEngine:
 
     def get_status(self) -> Dict:
         """ML engine status."""
+        local_status = self.local_model.get_status() if self.local_model else {"model": "none"}
         return {
             'enabled': self.enabled,
-            'model': self.model,
+            'model': self.model if self.enabled else 'local',
+            'local_model': local_status.get("model", "none"),
             'tokens_used': self._total_tokens_used,
+            'api_failures': self._api_failures,
             'cache_size': len(self._cache),
         }

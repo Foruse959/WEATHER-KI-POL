@@ -138,6 +138,39 @@ class ClobClient:
         log.info(f"✅ CLOB V2 READY — wallet: {self._wallet_address[:8]}...{self._wallet_address[-4:]}")
         return client
 
+    def init(self, private_key: str, funder: str = None, signature_type: int = 3):
+        """Alias for init_py_clob_client — used by executor."""
+        return self.init_py_clob_client(private_key, funder, signature_type)
+
+    def get_available_balance(self) -> Optional[float]:
+        """Get available balance — update allowance FIRST (prevents stale balance)."""
+        if not self._py_clob_client:
+            return None
+        try:
+            from py_clob_client_v2.clob_types import BalanceAllowanceParams, AssetType
+            params = BalanceAllowanceParams(
+                asset_type=AssetType.COLLATERAL,
+                signature_type=Config.POLY_SIGNATURE_TYPE,
+            )
+            # Force allowance sync (fixes "not enough balance" cascade from wle.txt)
+            self._py_clob_client.update_balance_allowance(params)
+            bal = self._py_clob_client.get_balance_allowance(params)
+            if bal:
+                raw = float(bal.get('balance', 0)) / 1_000_000
+                return raw
+        except Exception as e:
+            log.debug(f"Balance fetch: {e}")
+        return None
+
+    def get_order_status(self, order_id: str) -> Optional[Dict]:
+        """Check status of a single order by ID."""
+        if not self._py_clob_client:
+            return None
+        try:
+            return self._py_clob_client.get_order(order_id)
+        except Exception:
+            return None
+
     def get_balance(self) -> Optional[float]:
         """Get available pUSD balance from CLOB (6 decimal)."""
         if not self._py_clob_client:
@@ -186,12 +219,14 @@ class ClobClient:
             price_r = round(min(0.99, max(0.01, price)), 2)
             side_const = BUY if side.upper() == 'BUY' else SELL
 
-            # Calculate shares (GTC min 5, FOK min $1.00)
+            # Calculate shares. Both paths enforce ≥ $1 notional;
+            # GTC additionally needs ≥ 5 shares (Polymarket minimum).
             shares = size_pusd / price_r
+            min_dollar_shares = math.ceil(1.0 / price_r)  # ≥ $1 worth
             if expiration.upper() == 'GTC':
-                shares = max(5, math.floor(shares))
+                shares = max(5, min_dollar_shares, math.floor(shares))
             else:
-                shares = max(math.ceil(1.0 / price_r), math.floor(shares))
+                shares = max(min_dollar_shares, math.floor(shares))
 
             log.info(f"📤 Order: {side} {shares:.0f}sh @ ${price_r:.2f} = ${shares*price_r:.2f} (neg_risk={neg_risk})")
 

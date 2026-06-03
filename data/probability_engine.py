@@ -101,9 +101,12 @@ class ProbabilityEngine:
         results = []
         for label, lo, hi in buckets:
             prob = self._normal_prob(mean_temp, std_temp, lo, hi)
-            # Confidence based on model agreement and count
-            confidence = min(0.95, n_models * 0.15) * (1 - std_temp / 10)
-            confidence = max(0.1, min(0.95, confidence))
+            # Confidence based on model agreement, count, and ensemble spread
+            # Higher spread = lower confidence (models disagree)
+            spread_confidence = max(0.1, 1.0 - std_temp / 5.0)  # was /10, too lenient
+            model_count_confidence = min(1.0, n_models * 0.2)    # was 0.15, too conservative
+            confidence = spread_confidence * model_count_confidence * 0.95
+            confidence = max(0.10, min(0.95, confidence))  # floor 10%, ceiling 95%
 
             results.append(BucketProbability(
                 bucket_label=label,

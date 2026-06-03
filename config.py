@@ -104,7 +104,11 @@ class Config:
     # ═══════════════════════════════════════════════════════════════════
     SNIPER_ENABLED = os.getenv('SNIPER_ENABLED', '1') == '1'
     SPREAD_ENABLED = os.getenv('SPREAD_STRATEGY_ENABLED', '1') == '1'
+    SELECTIVE_SNIPER_ENABLED = os.getenv('SELECTIVE_SNIPER_ENABLED', '1') == '1'
+    QUICK_FLIP_ENABLED = os.getenv('QUICK_FLIP_ENABLED', '1') == '1'
+    CORRELATION_ARB_ENABLED = os.getenv('CORRELATION_ARB_ENABLED', '1') == '1'
     CONFIDENT_ENABLED = os.getenv('CONFIDENT_ENABLED', '1') == '1'
+    STABILITY_ENABLED = os.getenv('STABILITY_ENABLED', '1') == '1'
     LOCKIN_ENABLED = os.getenv('LOCKIN_ENABLED', '1') == '1'
     ML_ENABLED = os.getenv('ML_ENABLED', '1') == '1'
     TELEGRAM_ENABLED = os.getenv('TELEGRAM_ENABLED', '1') == '1'
@@ -133,6 +137,59 @@ class Config:
     LOCKIN_MIN_PRICE = float(os.getenv('LOCKIN_MIN_PRICE', '0.90'))
     LOCKIN_MIN_CONFIDENCE = float(os.getenv('LOCKIN_MIN_CONFIDENCE', '0.85'))
     LOCKIN_MAX_BET_PCT = float(os.getenv('LOCKIN_MAX_BET_PCT', '0.40'))
+
+    # ═══════════════════════════════════════════════════════════════════
+    # STABILITY STRATEGY — trade only predictable city-days, adjacent buckets
+    # ═══════════════════════════════════════════════════════════════════
+    STABILITY_MIN_SCORE = float(os.getenv('STABILITY_MIN_SCORE', '0.62'))        # predictable threshold
+    STABILITY_NEIGHBOR_SPAN = int(os.getenv('STABILITY_NEIGHBOR_SPAN', '1'))     # ±1 → buy 3 buckets
+    STABILITY_MAX_LEG_PRICE = float(os.getenv('STABILITY_MAX_LEG_PRICE', '0.60'))
+    STABILITY_MIN_EDGE = float(os.getenv('STABILITY_MIN_EDGE', '0.08'))          # basket edge vs cost
+    STABILITY_MAX_FRACTION = float(os.getenv('STABILITY_MAX_FRACTION', '0.25'))  # max % of balance per basket
+    STABILITY_EARLY_EXIT_PRICE = float(os.getenv('STABILITY_EARLY_EXIT_PRICE', '0.85'))
+    STABILITY_EXIT_HOURS_BEFORE = float(os.getenv('STABILITY_EXIT_HOURS_BEFORE', '1.0'))
+
+    # ═══════════════════════════════════════════════════════════════════
+    # BASKET QUALITY — predict the max temp, then buy an adjacent basket whose
+    # COMBINED cost < BASKET_MAX_COST so ANY single winning leg nets profit.
+    # Width is conviction-driven: high grade+confidence → TIGHT (center + the
+    # lean-neighbor, e.g. 24+25); lower → WIDER (23+24+25).
+    # ═══════════════════════════════════════════════════════════════════
+    BASKET_MAX_COST = float(os.getenv('BASKET_MAX_COST', '0.85'))            # sum(leg prices) must be below this (0.85 → ≥~18% profit on any win)
+    BASKET_TIGHT_GRADE = float(os.getenv('BASKET_TIGHT_GRADE', '0.80'))      # grade ≥ this (with high conf) → tight 2-leg basket
+    BASKET_TIGHT_CONFIDENCE = float(os.getenv('BASKET_TIGHT_CONFIDENCE', '0.70'))  # center-bucket confidence ≥ this for tight basket
+
+    # ═══════════════════════════════════════════════════════════════════
+    # SNIPER GATE — the lone cheap-tail sniper only fires on high-conviction,
+    # stable city-days (otherwise it buys junk cheap positions in non-winning
+    # baskets). Require a strong grade AND high model confidence.
+    # ═══════════════════════════════════════════════════════════════════
+    SNIPER_MIN_GRADE = float(os.getenv('SNIPER_MIN_GRADE', '0.70'))         # stability grade required for a lone sniper buy
+    SNIPER_MIN_CONFIDENCE = float(os.getenv('SNIPER_MIN_CONFIDENCE', '0.60'))  # model confidence required for a lone sniper buy
+
+    # ═══════════════════════════════════════════════════════════════════
+    # STABILITY GRADE — stability is a GRADE (not a strategy): it scales
+    # size and sets the exit for EVERY strategy. Higher grade = more stable
+    # weather = bigger size + hold to resolution.
+    # ═══════════════════════════════════════════════════════════════════
+    GRADE_SIZING_ENABLED = os.getenv('GRADE_SIZING_ENABLED', '1') == '1'
+    GRADE_NEUTRAL = float(os.getenv('GRADE_NEUTRAL', '0.60'))          # default grade when stability data is missing
+    GRADE_MIN_TO_TRADE = float(os.getenv('GRADE_MIN_TO_TRADE', '0.35'))  # hard skip below this grade
+    GRADE_SIZE_MIN_MULT = float(os.getenv('GRADE_SIZE_MIN_MULT', '0.30'))  # size multiplier at grade 0
+    GRADE_SIZE_MAX_MULT = float(os.getenv('GRADE_SIZE_MAX_MULT', '1.25'))  # size multiplier at grade 1
+
+    # ═══════════════════════════════════════════════════════════════════
+    # LIQUIDITY AWARENESS — weather books are thin & asymmetric (buy 3¢ /
+    # sell 1.5¢). The bot READS the order book and ADAPTS: enters MAKER at
+    # best_bid (0% fee, earn the spread), trims size on thin/wide books, and
+    # prefers holding to full resolution when the book is too thin to exit.
+    # It does NOT block trading — liquidity is advisory, not a hard gate
+    # (unless LIQUIDITY_STRICT_BLOCK=1).
+    # ═══════════════════════════════════════════════════════════════════
+    LIQUIDITY_GUARD_ENABLED = os.getenv('LIQUIDITY_GUARD_ENABLED', '1') == '1'   # read & adapt to the book
+    LIQUIDITY_STRICT_BLOCK = os.getenv('LIQUIDITY_STRICT_BLOCK', '0') == '1'     # 1 = skip trades that fail the guard (default OFF)
+    LIQUIDITY_THIN_SIZE_MULT = float(os.getenv('LIQUIDITY_THIN_SIZE_MULT', '0.5'))  # size multiplier on thin/wide books
+    LIQUIDITY_BOOK_CACHE_SECONDS = int(os.getenv('LIQUIDITY_BOOK_CACHE_SECONDS', '30'))
 
     # ═══════════════════════════════════════════════════════════════════
     # ADAPTIVE EXIT — analyze unfavorable markets and exit properly
